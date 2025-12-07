@@ -67,14 +67,14 @@ function buildMessage() {
 
   return {
     content:
-`🟢 **Legacy Roleplay Bangladesh — Live Players**
-👥 **Online:** ${lastPlayers.length}  |  📄 **Page ${currentPage + 1} / ${totalPages}**
+`**Legacy Roleplay Bangladesh — Live Players**
+**Online:** ${lastPlayers.length}  |  **Page ${currentPage + 1} / ${totalPages}**
 
 \`\`\`
 ${formatPlayersPage(lastPlayers, currentPage)}
 \`\`\`
-🌐 Full Player List: ${WEBSITE_LINK}
-🕒 Last update: **${time}**`,
+Full Player List: ${WEBSITE_LINK}
+Last update: **${time}**`,
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("prev").setLabel("◀ Prev").setStyle(ButtonStyle.Primary),
@@ -160,3 +160,4 @@ client.once("ready", () => {
 });
 
 client.login(BOT_TOKEN);
+
