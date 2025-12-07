@@ -1,162 +1,162 @@
-const { 
-  Client, 
-  GatewayIntentBits, 
-  ActionRowBuilder, 
-  ButtonBuilder, 
-  ButtonStyle 
-} = require("discord.js");
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 
-// ✅ YOUR REAL BOT TOKEN
 const BOT_TOKEN = process.env.BOT_TOKEN;
-
-// ✅ YOUR DISCORD CHANNEL ID
-const CHANNEL_ID = "1000818131574468718";
-
-// ✅ YOUR FIVE M PROXY API
 const PLAYERS_API = "https://fivem-proxy-five.vercel.app/api/players";
-
-// ✅ UPDATE INTERVAL (30 SECONDS)
-const UPDATE_INTERVAL = 30000;
-
-// ✅ PLAYERS PER PAGE
-const PER_PAGE = 30;
-
-// ✅ YOUR WEBSITE LINK
 const WEBSITE_LINK = "https://itachiwho.github.io/fivem-player-list/";
+
+const NORMAL_CHANNEL_ID = "1000818131574468718"; // Server 1 normal channel
+const FORUM_CHANNEL_ID = "1319930898510254172";  // Server 2 forum channel
+
+const PER_PAGE = 30;
+const UPDATE_INTERVAL = 30 * 1000;
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-let messageId = null;
-let currentPage = 0;
 let lastPlayers = [];
+let currentPage = 0;
+let normalMessageId = null;
+let forumThreadId = null;
+let forumMessageId = null;
 
-// ✅ Pad text for clean column alignment
-function padRight(text, length) {
-  text = String(text);
-  return text + " ".repeat(Math.max(0, length - text.length));
+// ✅ Bangladesh Time
+function getBDTime() {
+  return new Date().toLocaleTimeString("en-BD", {
+    timeZone: "Asia/Dhaka",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  });
 }
 
-// ✅ Format a single page
+// ✅ Fetch Players
+async function fetchPlayers() {
+  const res = await fetch(PLAYERS_API);
+  const data = await res.json();
+
+  let players = Array.isArray(data) ? data : (data.players || []);
+
+  // ✅ Sort by Server ID
+  players.sort((a, b) => a.id - b.id);
+
+  lastPlayers = players;
+}
+
+// ✅ Format Page
 function formatPlayersPage(players, page) {
-  if (!players.length) return "No players online.";
-
   const start = page * PER_PAGE;
-  const end = start + PER_PAGE;
-  const pagePlayers = players.slice(start, end);
+  const pagePlayers = players.slice(start, start + PER_PAGE);
 
-  const maxNameLength = Math.min(
-    Math.max(...pagePlayers.map(p => p.name.length), 6),
-    20
-  );
+  if (!pagePlayers.length) return "No players online.";
 
-  let lines = pagePlayers.map((p, i) => {
+  return pagePlayers.map((p, i) => {
     const num = `${start + i + 1}.`.padEnd(4, " ");
-    const id = padRight(`[ID: ${p.id}]`, 10);
-    const name = padRight(p.name.slice(0, 20), maxNameLength + 2);
-    const ping = padRight(`${p.ping}ms`, 6);
+    const name = (p.name || "Unknown").padEnd(15, " ");
+    return `${num} [ID: ${p.id}]  ${name}  ${p.ping}ms`;
+  }).join("\n");
+}
 
-    return `${num} ${id} ${name} ${ping}`;
+// ✅ Build Message
+function buildMessage() {
+  const totalPages = Math.max(1, Math.ceil(lastPlayers.length / PER_PAGE));
+  if (currentPage >= totalPages) currentPage = 0;
+
+  const time = getBDTime();
+
+  return {
+    content:
+`🟢 **Legacy Roleplay Bangladesh — Live Players**
+👥 **Online:** ${lastPlayers.length}  |  📄 **Page ${currentPage + 1} / ${totalPages}**
+
+\`\`\`
+${formatPlayersPage(lastPlayers, currentPage)}
+\`\`\`
+🌐 Full Player List: ${WEBSITE_LINK}
+🕒 Last update: **${time}**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("prev").setLabel("◀ Prev").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("next").setLabel("Next ▶").setStyle(ButtonStyle.Primary)
+      )
+    ]
+  };
+}
+
+// ✅ Ensure Forum Thread Exists
+async function ensureForumThread() {
+  const forum = await client.channels.fetch(FORUM_CHANNEL_ID);
+
+  if (forumThreadId) {
+    try {
+      const thread = await forum.threads.fetch(forumThreadId);
+      if (thread?.archived) await thread.setArchived(false);
+      return thread;
+    } catch {}
+  }
+
+  const thread = await forum.threads.create({
+    name: "🟢 Live FiveM Player List",
+    message: { content: "Initializing live player list..." }
   });
 
-  return lines.join("\n");
+  forumThreadId = thread.id;
+  const msg = await thread.fetchStarterMessage();
+  forumMessageId = msg.id;
+
+  return thread;
 }
 
-// ✅ Build buttons
-function getButtons(totalPages) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("prev")
-      .setLabel("◀️ Prev")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(currentPage === 0),
-
-    new ButtonBuilder()
-      .setCustomId("next")
-      .setLabel("Next ▶️")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(currentPage >= totalPages - 1)
-  );
-}
-
-// ✅ Main update function
-async function updatePlayerList() {
+// ✅ Update Both Locations
+async function updateAll() {
   try {
-    const res = await fetch(PLAYERS_API);
-    const data = await res.json();
+    await fetchPlayers();
+    const payload = buildMessage();
 
-let players = Array.isArray(data) ? data : (data.players || []);
-
-// ✅ SORT BY SERVER ID (LOW → HIGH)
-players.sort((a, b) => a.id - b.id);
-
-lastPlayers = players;
-
-    const totalPages = Math.max(1, Math.ceil(players.length / PER_PAGE));
-    if (currentPage >= totalPages) currentPage = totalPages - 1;
-
-const time = new Date().toLocaleTimeString("en-BD", {
-  timeZone: "Asia/Dhaka",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: true
-});
-
-const content = `
-**Legacy Roleplay Bangladesh — Live Players**
-**Online:** ${players.length}${data.max ? " / " + data.max : ""}  |  **Page ${currentPage + 1} / ${totalPages}**
-
-\`\`\`
-${formatPlayersPage(players, currentPage)}
-\`\`\`
-Full Player List: ${WEBSITE_LINK}
-Last update: **${time}**
-    `;
-
-    const channel = await client.channels.fetch(CHANNEL_ID);
-
-    if (!messageId) {
-      const msg = await channel.send({
-        content,
-        components: [getButtons(totalPages)]
-      });
-      messageId = msg.id;
-      console.log("✅ Live paged player message created.");
+    // ✅ Normal Channel Update
+    const normalChannel = await client.channels.fetch(NORMAL_CHANNEL_ID);
+    if (!normalMessageId) {
+      const msg = await normalChannel.send(payload);
+      normalMessageId = msg.id;
     } else {
-      await channel.messages.edit(messageId, {
-        content,
-        components: [getButtons(totalPages)]
-      });
-      console.log("✅ Player list updated at", time);
+      const msg = await normalChannel.messages.fetch(normalMessageId);
+      await msg.edit(payload);
     }
 
+    // ✅ Forum Thread Update
+    const thread = await ensureForumThread();
+    const forumMsg = await thread.messages.fetch(forumMessageId);
+    await forumMsg.edit(payload);
+
   } catch (err) {
-    console.error("❌ Failed to update player list:", err.message);
+    console.error("Update Failed:", err.message);
   }
 }
 
-// ✅ Button interaction handler
-client.on("interactionCreate", async (interaction) => {
+// ✅ Button Interaction
+client.on("interactionCreate", async interaction => {
   if (!interaction.isButton()) return;
 
+  const totalPages = Math.max(1, Math.ceil(lastPlayers.length / PER_PAGE));
+
   if (interaction.customId === "prev") {
-    currentPage--;
-  } 
+    currentPage = (currentPage - 1 + totalPages) % totalPages;
+  }
+
   if (interaction.customId === "next") {
-    currentPage++;
+    currentPage = (currentPage + 1) % totalPages;
   }
 
   await interaction.deferUpdate();
-  await updatePlayerList();
+  await updateAll();
 });
 
-client.once("ready", async () => {
-  console.log(`✅ Bot is now online as: ${client.user.tag}`);
-  await updatePlayerList();
-  setInterval(updatePlayerList, UPDATE_INTERVAL);
+// ✅ Bot Ready
+client.once("ready", () => {
+  console.log(`✅ Bot online as ${client.user.tag}`);
+  updateAll();
+  setInterval(updateAll, UPDATE_INTERVAL);
 });
 
 client.login(BOT_TOKEN);
-
