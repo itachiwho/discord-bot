@@ -96,7 +96,13 @@ lastPlayers = players;
     const totalPages = Math.max(1, Math.ceil(players.length / PER_PAGE));
     if (currentPage >= totalPages) currentPage = totalPages - 1;
 
-    const time = new Date().toLocaleTimeString();
+const time = new Date().toLocaleTimeString("en-BD", {
+  timeZone: "Asia/Dhaka",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: true
+});
 
 const content = `
 **Legacy Roleplay Bangladesh — Live Players**
@@ -153,3 +159,4 @@ client.once("ready", async () => {
 });
 
 client.login(BOT_TOKEN);
+
