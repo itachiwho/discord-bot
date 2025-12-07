@@ -11,7 +11,11 @@ const PER_PAGE = 30;
 const UPDATE_INTERVAL = 30 * 1000;
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.MessageContent
+]
 });
 
 let lastPlayers = [];
@@ -168,5 +172,48 @@ client.once("ready", () => {
 });
 
 client.login(BOT_TOKEN);
+
+// ✅ !players Command (Full list, auto-split)
+client.on("messageCreate", async message => {
+  if (message.author.bot) return;
+  if (message.content.toLowerCase() !== "!players") return;
+
+  if (!lastPlayers.length) {
+    return message.reply("⚠️ Player list is not available yet.");
+  }
+
+  const time = getBDTime();
+
+  const header =
+`**Online:** ${lastPlayers.length}  **Last update:** ${time}
+`;
+
+  const fullText = header + lastPlayers.map((p, i) => {
+    const num = `${i + 1}.`.padEnd(4, " ");
+    const name = (p.name || "Unknown").padEnd(20, " ");
+    const ping = `${p.ping}ms`.padStart(6, " ");
+    return `${num} [ID: ${p.id}]  ${name}${ping}`;
+  }).join("\n");
+
+  // ✅ Auto-split into 2000 char chunks
+  const chunks = [];
+  let currentChunk = "";
+
+  for (const line of fullText.split("\n")) {
+    if ((currentChunk + line + "\n").length > 1900) {
+      chunks.push(currentChunk);
+      currentChunk = "";
+    }
+    currentChunk += line + "\n";
+  }
+
+  if (currentChunk) chunks.push(currentChunk);
+
+  for (let i = 0; i < chunks.length; i++) {
+    await message.channel.send(
+      "```" + chunks[i] + "\n```"
+    );
+  }
+});
 
 
