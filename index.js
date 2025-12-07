@@ -51,10 +51,18 @@ function formatPlayersPage(players, page) {
 
   if (!pagePlayers.length) return "No players online.";
 
+  // ✅ Find longest name on this page
+  const maxNameLength = Math.max(
+    ...pagePlayers.map(p => (p.name || "Unknown").length),
+    10
+  );
+
   return pagePlayers.map((p, i) => {
     const num = `${start + i + 1}.`.padEnd(4, " ");
-    const name = (p.name || "Unknown").padEnd(15, " ");
-    return `${num} [ID: ${p.id}]  ${name}  ${p.ping}ms`;
+    const name = (p.name || "Unknown").padEnd(maxNameLength + 2, " ");
+    const ping = `${p.ping}ms`.padStart(6, " ");
+
+    return `${num} [ID: ${p.id}]  ${name}${ping}`;
   }).join("\n");
 }
 
@@ -160,4 +168,5 @@ client.once("ready", () => {
 });
 
 client.login(BOT_TOKEN);
+
 
