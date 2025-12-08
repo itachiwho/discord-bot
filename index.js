@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const { Client, GatewayIntentBits } = require("discord.js");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const PLAYERS_API = "https://fivem-proxy-five.vercel.app/api/players";
@@ -7,22 +7,21 @@ const WEBSITE_LINK = "https://itachiwho.github.io/fivem-player-list/";
 const NORMAL_CHANNEL_ID = "1000818131574468718"; // Server 1 normal channel
 const FORUM_CHANNEL_ID = "1319930898510254172";  // Server 2 forum channel
 
-const PER_PAGE = 30;
-const UPDATE_INTERVAL = 30 * 1000;
+const UPDATE_INTERVAL = 30 * 1000;           // 30s
+const MAX_CHARS_PER_CHUNK = 1500;            // safety margin under 2000
 
 const client = new Client({
   intents: [
-  GatewayIntentBits.Guilds,
-  GatewayIntentBits.GuildMessages,
-  GatewayIntentBits.MessageContent
-]
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
 let lastPlayers = [];
-let currentPage = 0;
-let normalMessageId = null;
+let normalMessageIds = []; // multiple messages in normal channel
 let forumThreadId = null;
-let forumMessageId = null;
+let forumMessageIds = [];  // multiple messages inside forum thread
 
 // ✅ Bangladesh Time
 function getBDTime() {
@@ -48,55 +47,93 @@ async function fetchPlayers() {
   lastPlayers = players;
 }
 
-// ✅ Format Page
-function formatPlayersPage(players, page) {
-  const start = page * PER_PAGE;
-  const pagePlayers = players.slice(start, start + PER_PAGE);
+// ✅ Build aligned rows for all players
+function buildPlayerRows(players) {
+  if (!players.length) return ["No players online."];
 
-  if (!pagePlayers.length) return "No players online.";
-
-  // ✅ Find longest name on this page
   const maxNameLength = Math.max(
-    ...pagePlayers.map(p => (p.name || "Unknown").length),
+    ...players.map(p => (p.name || "Unknown").length),
     10
   );
 
-  return pagePlayers.map((p, i) => {
-    const num = `${start + i + 1}.`.padEnd(4, " ");
+  return players.map((p, i) => {
+    const num = `${i + 1}.`.padEnd(4, " ");
     const name = (p.name || "Unknown").padEnd(maxNameLength + 2, " ");
     const ping = `${p.ping}ms`.padStart(6, " ");
-
-    return `${num} [ID: ${p.id}]  ${name}${ping}`;
-  }).join("\n");
+    return `${num} [${p.id}]  ${name}${ping}`;
+  });
 }
 
-// ✅ Build Message
-function buildMessage() {
-  const totalPages = Math.max(1, Math.ceil(lastPlayers.length / PER_PAGE));
-  if (currentPage >= totalPages) currentPage = 0;
+// ✅ Split array of lines into chunks by character limit
+function chunkLines(lines, maxChars) {
+  const chunks = [];
+  let current = [];
 
+  let currentLen = 0;
+
+  for (const line of lines) {
+    const lineWithNewline = line + "\n";
+    if (currentLen + lineWithNewline.length > maxChars && current.length) {
+      chunks.push(current.join("\n"));
+      current = [];
+      currentLen = 0;
+    }
+    current.push(line);
+    currentLen += lineWithNewline.length;
+  }
+
+  if (current.length) {
+    chunks.push(current.join("\n"));
+  }
+
+  return chunks;
+}
+
+// ✅ Build content chunks for live dashboard (header only on first)
+function buildDashboardChunks() {
   const time = getBDTime();
+  const rows = buildPlayerRows(lastPlayers);
+  const bodyChunks = chunkLines(rows, MAX_CHARS_PER_CHUNK);
 
-  return {
-    content:
-`**Legacy Roleplay Bangladesh — Live Players**
-**Online:** ${lastPlayers.length}  |  **Page ${currentPage + 1} / ${totalPages}**
+  if (!bodyChunks.length) {
+    return [
+      `**Legacy Roleplay Bangladesh — Live Players**\n` +
+      `**Online:** 0\n\n` +
+      `No players online.\n` +
+      `Last update: **${time}**\n` +
+      `Full Player List: ${WEBSITE_LINK}`
+    ];
+  }
 
-\`\`\`
-${formatPlayersPage(lastPlayers, currentPage)}
-\`\`\`
-Full Player List: ${WEBSITE_LINK}
-Last update: **${time}**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("prev").setLabel("◀ Prev").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("next").setLabel("Next ▶").setStyle(ButtonStyle.Primary)
-      )
-    ]
-  };
+  const chunks = [];
+
+  // ✅ First message: header + first chunk + footer
+  const first =
+    `**Legacy Roleplay Bangladesh — Live Players**\n` +
+    `**Online:** ${lastPlayers.length}\n\n` +
+    "```" +
+    "\n" +
+    bodyChunks[0] +
+    "\n```" +
+    `\nLast update: **${time}**` +
+    `\nFull Player List: ${WEBSITE_LINK}`;
+
+  chunks.push(first);
+
+  // ✅ Remaining chunks: only code blocks (no header)
+  for (let i = 1; i < bodyChunks.length; i++) {
+    const content =
+      "```" +
+      "\n" +
+      bodyChunks[i] +
+      "\n```";
+    chunks.push(content);
+  }
+
+  return chunks;
 }
 
-// ✅ Ensure Forum Thread Exists
+// ✅ Ensure Forum Thread Exists (and keep its starter message as first)
 async function ensureForumThread() {
   const forum = await client.channels.fetch(FORUM_CHANNEL_ID);
 
@@ -105,7 +142,9 @@ async function ensureForumThread() {
       const thread = await forum.threads.fetch(forumThreadId);
       if (thread?.archived) await thread.setArchived(false);
       return thread;
-    } catch {}
+    } catch {
+      // fall through and recreate
+    }
   }
 
   const thread = await forum.threads.create({
@@ -114,55 +153,68 @@ async function ensureForumThread() {
   });
 
   forumThreadId = thread.id;
-  const msg = await thread.fetchStarterMessage();
-  forumMessageId = msg.id;
+
+  // Use the starter message as first dashboard message
+  const starter = await thread.fetchStarterMessage();
+  forumMessageIds = [starter.id];
 
   return thread;
 }
 
-// ✅ Update Both Locations
+// ✅ Update a location (normal channel OR thread) with N chunks
+async function updateLocationMessages(channelOrThread, messageIdsArray, chunks) {
+  // Edit or send messages as needed
+  for (let i = 0; i < chunks.length; i++) {
+    const content = chunks[i];
+
+    if (messageIdsArray[i]) {
+      try {
+        const msg = await channelOrThread.messages.fetch(messageIdsArray[i]);
+        await msg.edit(content);
+      } catch {
+        // If fetch/edit fails (deleted, etc.), send a new one
+        const newMsg = await channelOrThread.send(content);
+        messageIdsArray[i] = newMsg.id;
+      }
+    } else {
+      const newMsg = await channelOrThread.send(content);
+      messageIdsArray[i] = newMsg.id;
+    }
+  }
+
+  // If we have more old messages than chunks, delete extras
+  if (messageIdsArray.length > chunks.length) {
+    const extraIds = messageIdsArray.slice(chunks.length);
+    for (const id of extraIds) {
+      try {
+        const msg = await channelOrThread.messages.fetch(id);
+        await msg.delete();
+      } catch {
+        // ignore if already gone
+      }
+    }
+    messageIdsArray.length = chunks.length; // trim array
+  }
+}
+
+// ✅ Main update: fetch players, build chunks, update both locations
 async function updateAll() {
   try {
     await fetchPlayers();
-    const payload = buildMessage();
+    const chunks = buildDashboardChunks();
 
-    // ✅ Normal Channel Update
+    // ✅ Normal Channel
     const normalChannel = await client.channels.fetch(NORMAL_CHANNEL_ID);
-    if (!normalMessageId) {
-      const msg = await normalChannel.send(payload);
-      normalMessageId = msg.id;
-    } else {
-      const msg = await normalChannel.messages.fetch(normalMessageId);
-      await msg.edit(payload);
-    }
+    await updateLocationMessages(normalChannel, normalMessageIds, chunks);
 
-    // ✅ Forum Thread Update
+    // ✅ Forum Thread
     const thread = await ensureForumThread();
-    const forumMsg = await thread.messages.fetch(forumMessageId);
-    await forumMsg.edit(payload);
+    await updateLocationMessages(thread, forumMessageIds, chunks);
 
   } catch (err) {
     console.error("Update Failed:", err.message);
   }
 }
-
-// ✅ Button Interaction
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isButton()) return;
-
-  const totalPages = Math.max(1, Math.ceil(lastPlayers.length / PER_PAGE));
-
-  if (interaction.customId === "prev") {
-    currentPage = (currentPage - 1 + totalPages) % totalPages;
-  }
-
-  if (interaction.customId === "next") {
-    currentPage = (currentPage + 1) % totalPages;
-  }
-
-  await interaction.deferUpdate();
-  await updateAll();
-});
 
 // ✅ Bot Ready
 client.once("ready", () => {
@@ -173,7 +225,7 @@ client.once("ready", () => {
 
 client.login(BOT_TOKEN);
 
-// ✅ !players Command (Full list, auto-split)
+// ✅ !players Command (Full list, auto-split plain messages)
 client.on("messageCreate", async message => {
   if (message.author.bot) return;
   if (message.content.toLowerCase() !== "!players") return;
@@ -183,24 +235,23 @@ client.on("messageCreate", async message => {
   }
 
   const time = getBDTime();
+  const rows = buildPlayerRows(lastPlayers);
 
   const header =
-`**Online:** ${lastPlayers.length}  **Last update:** ${time}
+`**Legacy Roleplay Bangladesh — Full Player List**
+**Online:** ${lastPlayers.length}
+**Last update:** ${time}
+
 `;
 
-  const fullText = header + lastPlayers.map((p, i) => {
-    const num = `${i + 1}.`.padEnd(4, " ");
-    const name = (p.name || "Unknown").padEnd(20, " ");
-    const ping = `${p.ping}ms`.padStart(6, " ");
-    return `${num} [ID: ${p.id}]  ${name}${ping}`;
-  }).join("\n");
+  const fullText = header + rows.join("\n");
 
-  // ✅ Auto-split into 2000 char chunks
+  // ✅ Auto-split into chunks under 1900 chars
   const chunks = [];
   let currentChunk = "";
 
   for (const line of fullText.split("\n")) {
-    if ((currentChunk + line + "\n").length > 1900) {
+    if ((currentChunk + line + "\n").length > 1900 && currentChunk) {
       chunks.push(currentChunk);
       currentChunk = "";
     }
@@ -210,10 +261,6 @@ client.on("messageCreate", async message => {
   if (currentChunk) chunks.push(currentChunk);
 
   for (let i = 0; i < chunks.length; i++) {
-    await message.channel.send(
-      "```" + chunks[i] + "\n```"
-    );
+    await message.channel.send("```" + chunks[i] + "\n```");
   }
 });
-
-
