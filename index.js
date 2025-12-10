@@ -7,8 +7,8 @@ const WEBSITE_LINK = "https://itachiwho.github.io/fivem-player-list/";
 const NORMAL_CHANNEL_ID = "1000818131574468718"; // Server 1 normal channel
 const FORUM_CHANNEL_ID = "1319930898510254172";  // Server 2 forum channel
 
-const UPDATE_INTERVAL = 30 * 1000;           // 30s
-const MAX_CHARS_PER_CHUNK = 1500;            // safety margin under 2000
+const UPDATE_INTERVAL = 30 * 1000;           // 30 seconds
+const MAX_CHARS_PER_CHUNK = 1500;            // Safety margin under Discord 2000 limit
 
 const client = new Client({
   intents: [
@@ -19,9 +19,9 @@ const client = new Client({
 });
 
 let lastPlayers = [];
-let normalMessageIds = []; // multiple messages in normal channel
+let normalMessageIds = []; 
 let forumThreadId = null;
-let forumMessageIds = [];  // multiple messages inside forum thread
+let forumMessageIds = [];
 
 // ✅ Bangladesh Time
 function getBDTime() {
@@ -47,7 +47,7 @@ async function fetchPlayers() {
   lastPlayers = players;
 }
 
-// ✅ Build aligned rows for all players
+// ✅ Build aligned rows
 function buildPlayerRows(players) {
   if (!players.length) return ["No players online."];
 
@@ -64,22 +64,21 @@ function buildPlayerRows(players) {
   });
 }
 
-// ✅ Split array of lines into chunks by character limit
+// ✅ Split lines safely into chunks
 function chunkLines(lines, maxChars) {
   const chunks = [];
   let current = [];
-
   let currentLen = 0;
 
   for (const line of lines) {
-    const lineWithNewline = line + "\n";
-    if (currentLen + lineWithNewline.length > maxChars && current.length) {
+    const len = line.length + 1;
+    if (currentLen + len > maxChars && current.length) {
       chunks.push(current.join("\n"));
       current = [];
       currentLen = 0;
     }
     current.push(line);
-    currentLen += lineWithNewline.length;
+    currentLen += len;
   }
 
   if (current.length) {
@@ -89,7 +88,7 @@ function chunkLines(lines, maxChars) {
   return chunks;
 }
 
-// ✅ Build content chunks for live dashboard (header only on first)
+// ✅ Build Dashboard Chunks (FINAL HEADER FORMAT)
 function buildDashboardChunks() {
   const time = getBDTime();
   const rows = buildPlayerRows(lastPlayers);
@@ -98,29 +97,27 @@ function buildDashboardChunks() {
   if (!bodyChunks.length) {
     return [
       `**Legacy Roleplay Bangladesh — Live Players**\n` +
-      `**Online:** 0\n\n` +
-      `No players online.\n` +
-      `Last update: **${time}**\n` +
-      `Full Player List: ${WEBSITE_LINK}`
+      `**Online:** 0 | Last update: **${time}**\n` +
+      `Full Player List: ${WEBSITE_LINK}\n\n` +
+      `No players online.`
     ];
   }
 
   const chunks = [];
 
-  // ✅ First message: header + first chunk + footer
+  // ✅ FIRST MESSAGE (WITH HEADER)
   const first =
     `**Legacy Roleplay Bangladesh — Live Players**\n` +
-    `**Online:** ${lastPlayers.length}\n\n` +
+    `**Online:** ${lastPlayers.length} | Last update: **${time}**\n` +
+    `Full Player List: ${WEBSITE_LINK}\n\n` +
     "```" +
     "\n" +
     bodyChunks[0] +
-    "\n```" +
-    `\nLast update: **${time}**` +
-    `\nFull Player List: ${WEBSITE_LINK}`;
+    "\n```";
 
   chunks.push(first);
 
-  // ✅ Remaining chunks: only code blocks (no header)
+  // ✅ NEXT MESSAGES (NO HEADER)
   for (let i = 1; i < bodyChunks.length; i++) {
     const content =
       "```" +
@@ -133,7 +130,7 @@ function buildDashboardChunks() {
   return chunks;
 }
 
-// ✅ Ensure Forum Thread Exists (and keep its starter message as first)
+// ✅ Ensure Forum Thread Exists
 async function ensureForumThread() {
   const forum = await client.channels.fetch(FORUM_CHANNEL_ID);
 
@@ -142,9 +139,7 @@ async function ensureForumThread() {
       const thread = await forum.threads.fetch(forumThreadId);
       if (thread?.archived) await thread.setArchived(false);
       return thread;
-    } catch {
-      // fall through and recreate
-    }
+    } catch {}
   }
 
   const thread = await forum.threads.create({
@@ -154,16 +149,14 @@ async function ensureForumThread() {
 
   forumThreadId = thread.id;
 
-  // Use the starter message as first dashboard message
   const starter = await thread.fetchStarterMessage();
   forumMessageIds = [starter.id];
 
   return thread;
 }
 
-// ✅ Update a location (normal channel OR thread) with N chunks
+// ✅ Update Multi-Message Location
 async function updateLocationMessages(channelOrThread, messageIdsArray, chunks) {
-  // Edit or send messages as needed
   for (let i = 0; i < chunks.length; i++) {
     const content = chunks[i];
 
@@ -172,7 +165,6 @@ async function updateLocationMessages(channelOrThread, messageIdsArray, chunks) 
         const msg = await channelOrThread.messages.fetch(messageIdsArray[i]);
         await msg.edit(content);
       } catch {
-        // If fetch/edit fails (deleted, etc.), send a new one
         const newMsg = await channelOrThread.send(content);
         messageIdsArray[i] = newMsg.id;
       }
@@ -182,32 +174,28 @@ async function updateLocationMessages(channelOrThread, messageIdsArray, chunks) 
     }
   }
 
-  // If we have more old messages than chunks, delete extras
+  // ✅ Delete extra messages if player count dropped
   if (messageIdsArray.length > chunks.length) {
     const extraIds = messageIdsArray.slice(chunks.length);
     for (const id of extraIds) {
       try {
         const msg = await channelOrThread.messages.fetch(id);
         await msg.delete();
-      } catch {
-        // ignore if already gone
-      }
+      } catch {}
     }
-    messageIdsArray.length = chunks.length; // trim array
+    messageIdsArray.length = chunks.length;
   }
 }
 
-// ✅ Main update: fetch players, build chunks, update both locations
+// ✅ Main Update Loop
 async function updateAll() {
   try {
     await fetchPlayers();
     const chunks = buildDashboardChunks();
 
-    // ✅ Normal Channel
     const normalChannel = await client.channels.fetch(NORMAL_CHANNEL_ID);
     await updateLocationMessages(normalChannel, normalMessageIds, chunks);
 
-    // ✅ Forum Thread
     const thread = await ensureForumThread();
     await updateLocationMessages(thread, forumMessageIds, chunks);
 
@@ -225,7 +213,7 @@ client.once("ready", () => {
 
 client.login(BOT_TOKEN);
 
-// ✅ !players Command (Full list, auto-split plain messages)
+// ✅ !players Command (Full List)
 client.on("messageCreate", async message => {
   if (message.author.bot) return;
   if (message.content.toLowerCase() !== "!players") return;
@@ -246,7 +234,6 @@ client.on("messageCreate", async message => {
 
   const fullText = header + rows.join("\n");
 
-  // ✅ Auto-split into chunks under 1900 chars
   const chunks = [];
   let currentChunk = "";
 
@@ -260,7 +247,7 @@ client.on("messageCreate", async message => {
 
   if (currentChunk) chunks.push(currentChunk);
 
-  for (let i = 0; i < chunks.length; i++) {
-    await message.channel.send("```" + chunks[i] + "\n```");
+  for (const part of chunks) {
+    await message.channel.send("```" + part + "\n```");
   }
 });
